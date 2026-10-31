@@ -1,0 +1,57 @@
+# Yu — personal AI companion bundle.
+# Every runtime value that a user may change from the admin console lives in Yu's
+# own store (<dataDir>/yu.db), not here. This layer only bootstraps the process:
+# where the listener binds and where the data directory is.
+- insert:
+    - id: yu-companion
+      name: '@yu/companion'
+      config:
+        # Stable admin URL. Fixed on purpose: the DSH web port is OS-assigned.
+        port: 58800
+        host: 127.0.0.1
+        # Empty -> %LOCALAPPDATA%\Yu on Windows, ~/.local/share/yu elsewhere.
+        dataDir: ''
+        # Also answer on the DSH origin under /yu (secondary entrance).
+        exposeViaDshWeb: true
+        timezone: Asia/Shanghai
+
+    # Group-chat preset: the minimal composition minus the shell.
+    #
+    # In a group she is a guest in someone else's conversation, so the tools that
+    # touch this machine (a persistent bash/pwsh, file writes) are exactly the ones
+    # that must not be reachable from a stranger's message. Reading an image and
+    # compacting history stay, because those only affect her own answers.
+    - id: preset-yu-group
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: yu-group
+        order: 5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              # Deliberately NOT `complete: true`: that flag replaces the whole
+              # system prompt, which silently discarded Yu's own core, role card,
+              # task goal and memory. In a group she needs the same rules as
+              # everywhere else, plus this short framing on top.
+              prefix: >-
+                你是小雨（忧天未雨），群里的一个普通人，不是助手。
+                你就在这个群里，接得上就说一句；接不上就不说，不用为了不冷场硬回。
+              includeRuntimeContext: false
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: false
+              readImage: true
+              write: false
+              edit: false
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'

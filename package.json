@@ -1,0 +1,50 @@
+{
+  "name": "@yu/companion",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Yu - a personal AI companion for DeepSeek Harness: tasks, triggers, context profiles, memory, archives, channels and a full web admin console.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "dist/web",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "docs",
+    "DATABASE-SOURCES.md",
+    "LICENSE",
+    "INSTALL.md",
+    "scripts/start-isolated.mjs",
+    "config/yu.default.json"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": "^0.2.1-rc.2"
+  },
+  "scripts": {
+    "build:web": "node web/node_modules/vite/bin/vite.js build --config web/vite.config.mjs",
+    "check": "node --check index.js && node --check lib/client.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "license": "MIT"
+}

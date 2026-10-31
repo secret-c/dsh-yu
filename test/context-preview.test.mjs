@@ -1,0 +1,34 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { apply } from '../index.js';
+import { createFakeHost } from './fake-harness.mjs';
+import { previewContext, sectionEffect } from '../lib/context-preview.js';
+
+test('fresh, draft, frame and historical snapshot preserve their distinct sources', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yu-preview-'));
+  const app = apply(createFakeHost().ctx, { port: 0, dataDir, exposeViaDshWeb: false });
+  await app.ready;
+  for(const task of app.repo.tasks.list().filter(t=>t.kind==='maintenance')) app.repo.tasks.update(task.id,{memoryPolicy:{...task.memoryPolicy,shortTermSlug:app.repo.memory.blocks()[0]?.slug}});
+  t.after(async () => { await app.stop(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  const context = app.repo.contexts.list()[0];
+  const beforeRuns = app.repo.runs.list().length;
+  const fresh = previewContext(app, context, { input: 'fixture' });
+  const draft = previewContext(app, context, { mode: 'draft', input: 'fixture', texts: { 'prompt.core': 'DRAFT CORE' } });
+  assert.match(draft.compiled.renderedSystem, /DRAFT CORE/);
+  assert.doesNotMatch(fresh.compiled.renderedSystem, /DRAFT CORE/);
+  const conversation = app.repo.conversations.create({ title: 'preview', kind: 'web' });
+  const snapshotId = app.repo.contexts.snapshot({ conversationId: conversation.id, resolved: fresh.compiled });
+  app.repo.conversations.update(conversation.id, { sessionId: 'session', meta: { contextFrame: { sessionId: 'session', snapshotId } } });
+  app.settings.setMany({ 'prompt.core': 'CURRENT CORE' }, 'user');
+  const frame = previewContext(app, context, { mode: 'frame', conversationId: conversation.id });
+  assert.equal(frame.source.frozenFrom, snapshotId);
+  assert.doesNotMatch(frame.compiled.renderedSystem, /CURRENT CORE/);
+  const historical = previewContext(app, context, { mode: 'snapshot', snapshotId });
+  assert.deepEqual(historical.compiled, fresh.compiled);
+  const turn = sectionEffect(app.settings, { turnSections: ['yu:core'] }, ['yu:core', 'yu:memory']);
+  assert.deepEqual(turn.sections.map((item) => item.readAt), ['each turn', 'session creation']);
+  assert.equal(app.repo.runs.list().length, beforeRuns);
+});

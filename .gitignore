@@ -1,0 +1,13 @@
+node_modules/
+web/node_modules/
+web/.build-check/
+.data/
+yu-isolated/
+*.db
+*.db-wal
+*.db-shm
+*.log
+pairing-code.txt
+secrets.env
+*.credentials.yaml
+.tmp*/

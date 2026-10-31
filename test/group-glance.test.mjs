@@ -1,0 +1,53 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {apply} from '../index.js';
+import {createFakeHost} from './fake-harness.mjs';
+import {createChannelManager} from '../lib/channels/manager.js';
+
+test('glance counts persist, isolate bindings, reset for keywords, and restore failed admission',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'yu-glance-'));
+ const boot=async()=>{const app=apply(createFakeHost().ctx,{port:0,dataDir:dir,exposeViaDshWeb:false});await app.ready;return app;};
+ let app=await boot();t.after(async()=>{await app.stop();fs.rmSync(dir,{recursive:true,force:true});});
+ const spec={keywords:['测试名字'],messageCount:20,windowMessages:30};
+ for(let i=1;i<20;i++)assert.equal(app.repo.groupBuffer.glance('b','c','g',{text:`消息${i}`,at:1},spec).fire,false);
+ await app.stop();app=await boot();
+ assert.equal(app.repo.groupBuffer.glance('b','c','other',{text:'别群'},spec).fire,false);
+ const batch=app.repo.groupBuffer.glance('b','c','g',{text:'测试名字',at:1},spec);
+ assert.equal(batch.fire,true);assert.equal(batch.messages.length,20);assert.equal(batch.keyword,'测试名字');
+ assert.equal(app.repo.groupBuffer.glance('b','c','g',{text:'之后'},spec).fire,false);
+ app.repo.groupBuffer.restoreGlance('b','c','g',batch,30);
+ assert.equal(app.repo.groupBuffer.glance('b','c','g',{text:'重试'},spec).fire,true);
+});
+
+test('manager admits one look per twenty with full batch; duplicate/self ignored and direct @ wins',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'yu-glance-manager-'));
+ const app=apply(createFakeHost().ctx,{port:0,dataDir:dir,exposeViaDshWeb:false});await app.ready;
+ t.after(async()=>{await app.stop();fs.rmSync(dir,{recursive:true,force:true});});
+ const channel=app.repo.channels.create({type:'onebot',name:'本地验证',enabled:false,config:{}});
+ const task=app.repo.tasks.create({name:'群查看',kind:'chat',enabled:true,goal:'观察',conversationMode:'per-peer'});
+ app.repo.triggers.create(task.id,{type:'group-watch',spec:{policy:'keyword-or-count',channelId:channel.id,peerId:'g',keywords:['测试名字'],messageCount:20}});
+ const runs=[];let fail=false;
+ const manager=createChannelManager({repo:app.repo,settings:app.settings,runner:{enqueue:(task,opts)=>{if(fail)throw Error('admission failed');runs.push(opts);return {run:{id:'r'}};},waitForRun:async()=>({status:'succeeded',outputText:'%%'})}});
+ const event=(i,extra={})=>({eventId:String(i),channelId:channel.id,kind:'qq_group',accountId:'bot',senderId:'user',senderName:'甲',peerId:'g',text:`第${i}条`,...extra});
+ for(let i=1;i<20;i++)await manager.handleInbound(channel,event(i));
+ await manager.handleInbound(channel,event(19));await manager.handleInbound(channel,event('self',{senderId:'bot'}));assert.equal(runs.length,0);
+ await manager.handleInbound(channel,event(20,{text:'测试名字'}));assert.equal(runs.length,1);assert.match(runs[0].input,/第1条/);assert.match(runs[0].input,/第19条/);assert.match(runs[0].input,/%%/);
+ await Promise.all(Array.from({length:40},(_,i)=>manager.handleInbound(channel,event(i+21))));assert.equal(runs.length,3);
+ fail=true;await manager.handleInbound(channel,event(61,{text:'测试名字'}));fail=false;
+ await manager.handleInbound(channel,event(62,{text:'测试名字'}));assert.equal(runs.length,4);assert.equal((runs.at(-1).input.match(/：测试名字/g)||[]).length,2);
+ app.repo.triggers.create(task.id,{type:'message',spec:{channelId:channel.id,peerId:'g',peerKind:'group',match:'mention'}});
+ await manager.handleInbound(channel,event(63,{mentioned:true,text:'测试名字 @bot'}));assert.equal(runs.length,5);assert.equal(runs.at(-1).meta.groupDecision,null);
+ for(let i=64;i<83;i++)await manager.handleInbound(channel,event(i));assert.equal(runs.length,5);
+ await manager.handleInbound(channel,event(83));assert.equal(runs.length,6);
+ await manager.handleInbound(channel,event(84,{text:'很长'.repeat(10000)}));
+ await manager.handleInbound(channel,event(85,{text:'测试名字 最新触发消息'}));
+ assert.match(runs.at(-1).input,/最新触发消息/);assert.ok(runs.at(-1).input.length<2000);
+ await manager.handleInbound(channel,event(86));fail=true;
+ await manager.handleInbound(channel,event(87,{mentioned:true}));fail=false;
+ assert.equal(app.repo.raw.get('SELECT count FROM group_glances WHERE channel_id=? AND peer_id=?',channel.id,'g').count,2);
+ app.repo.groupBuffer.clear({channelId:channel.id,peerId:'g'});
+ assert.equal(app.repo.raw.get('SELECT count(*) AS n FROM group_glances WHERE channel_id=? AND peer_id=?',channel.id,'g').n,0);
+});

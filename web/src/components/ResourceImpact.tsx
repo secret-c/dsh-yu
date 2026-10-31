@@ -1,0 +1,10 @@
+import React,{useState} from 'react';
+import {useApi,Button,ErrorBox} from '../ui';
+import {api} from '../lib';
+export default function ResourceImpact({kind,id,onChanged}:{kind:string;id:string;onChanged:()=>void}){
+ const state=useApi<any>(`/api/resources/${kind}/${id}/impact`);
+ const graph=useApi<any>('/api/resources');
+ const [open,setOpen]=useState(false),[replacement,setReplacement]=useState(''),[error,setError]=useState<Error|null>(null),[busy,setBusy]=useState(false);
+ const change=async(action:string,resolution:string)=>{setBusy(true);setError(null);try{await api(`/api/resources/${kind}/${id}/change`,{method:'POST',body:{action,resolution,replacementId:replacement||null}});setOpen(false);await state.reload();onChanged();}catch(e){setError(e as Error);}finally{setBusy(false);}};
+ return <div><Button variant="quiet" size="small" onClick={()=>{setOpen(!open);void state.reload();void graph.reload();}}>使用者与停用／删除影响（{state.data?.bindings?.length??'…'}）</Button>{open&&<div className="notice"><p>{state.data?.notice}</p><p>可确认正在使用的运行：{state.data?.activeRuns?.length??0}；最近实际调用：{state.data?.recentCalls?.length??0}</p>{(state.data?.bindings??[]).map((b:any,i:number)=><div key={i}>{b.user?.kind} · {b.user?.name} · {b.relation==='global-inherited'?'全局继承范围（随全局启停变化）':b.relation==='inherited'?'继承明确绑定':'确定绑定'}</div>)}<select aria-label="替换资源" value={replacement} onChange={e=>setReplacement(e.target.value)}><option value="">选择替代资源</option>{(graph.data?.nodes??[]).filter((n:any)=>n.kind===kind&&n.id!==id).map((n:any)=><option key={n.id} value={n.id}>{n.name}</option>)}</select><div className="row"><Button disabled={busy||!replacement} onClick={()=>void change('delete','replace')}>替换全部绑定并删除</Button>{['packages','sources'].includes(kind)&&<Button disabled={busy} onClick={()=>void change('disable','detach')}>解除绑定并停用</Button>}<Button disabled={busy||kind==='context'} onClick={()=>void change('delete','detach')}>解除绑定并删除（保留资料）</Button></div>{error&&<ErrorBox error={error}/>}</div>}</div>;
+}
