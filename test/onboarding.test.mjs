@@ -26,7 +26,22 @@ test('shared: seven stable roles, full historical build, failure/retry gate, rep
  const oldLink=app.dshLinks.getLinks()[0];const again=await s.configure();assert.equal(again.status,'ready');assert.equal(app.dshLinks.getLinks()[0].memoryGeneration,oldLink.memoryGeneration);
  const count=app.repo.triggers.listAll().length;await s.configure();assert.equal(app.repo.triggers.listAll().length,count);
  const changed=await s.configure({...s.selection,mode:'managed'});assert.equal(changed.status,'ready');assert.equal(app.dshLinks.getLinks()[0].enabled,false);
- for(const [role,id] of Object.entries(changed.taskIds)){const task=app.repo.tasks.get(id);assert.equal(task.executionTarget.mode,'yu');if(role!=='maintenance')assert.equal(task.archivePolicy.conversation,'on-success');}
+ for(const [role,id] of Object.entries(changed.taskIds)){const task=app.repo.tasks.get(id);assert.equal(task.executionTarget.mode,'yu');assert.equal(task.conversationMode,['private','group'].includes(role)?'per-peer':'new');assert.equal(task.archivePolicy.conversation,['private','group','maintenance'].includes(role)?'keep':'on-success');}
+});
+test('managed QQ conversation reuses one peer session and isolates another peer and group',async t=>{
+ const s=await boot(t),{app}=s;
+ const state=await s.configure({...s.selection,mode:'managed'});
+ const task=app.repo.tasks.get(state.taskIds.private);
+ const run=async(peerId,kind='qq_private')=>{
+   const {run}=app.runner.enqueue(task,{meta:{channelId:s.selection.channelId,peerId,peerLabel:peerId,kind}});
+   return app.runner.waitForRun(run.id);
+ };
+ const first=await run('111');const second=await run('111');const other=await run('222');const group=await run('111','qq_group');
+ assert.equal(first.status,'succeeded');assert.equal(second.status,'succeeded');
+ assert.equal(first.conversationId,second.conversationId);
+ assert.equal(first.sessionId,second.sessionId);
+ assert.notEqual(first.conversationId,other.conversationId);
+ assert.notEqual(first.conversationId,group.conversationId);
 });
 test('shared first build keeps a large existing long-term library and opens the business gate',async t=>{
  const s=await boot(t),{app}=s;
