@@ -14,12 +14,25 @@ test('journal runner persists a document and preserves it across archive and ret
  const task=app.repo.tasks.create({name:'日记',kind:'journal',goal:'CUSTOM_JOURNAL_GOAL',conversationMode:'new',archivePolicy:{mode:'always'}});
  const {run}=app.runner.enqueue(task); const result=await app.runner.waitForRun(run.id);
  assert.equal(result.status,'succeeded'); assert.ok(result.meta.documentSlug);
- const doc=app.repo.documents.get(result.meta.documentSlug); assert.equal(doc.content,result.outputText); assert.match(doc.title,/^\d{4}-\d{2}-\d{2} 日记$/);
+ const doc=app.repo.documents.get(result.meta.documentSlug); assert.ok(doc.content.startsWith(result.outputText)); assert.match(doc.content,/<!-- yu-journal:run_/); assert.match(doc.title,/^\d{4}-\d{2}-\d{2} 日记$/);
  assert.match(host.calls.at(-1).system,/不要编造/); assert.match(host.calls.at(-1).system,/CUSTOM_JOURNAL_GOAL/);
  assert.ok(app.repo.archives.list({limit:10}).some(a=>a.runId===run.id));
  app.repo.documents.update(doc.slug,{content:'手工修改'}); persistJournal({repo:app.repo,run:result,text:'重复'}); assert.equal(app.repo.documents.get(doc.slug).content,'手工修改');
 });
 test('empty and failed document writes do not report success',()=>{
  assert.throws(()=>persistJournal({repo:{},run:{id:'a'},text:'  '}),/没有正文/);
- assert.throws(()=>persistJournal({repo:{documents:{get:()=>null,upsert:()=>{throw Error('write failed')}}},run:{id:'a'},text:'内容'}),/write failed/);
+ assert.throws(()=>persistJournal({repo:{documents:{get:()=>null,list:()=>[],upsert:()=>{throw Error('write failed')}}},run:{id:'a'},text:'内容'}),/write failed/);
+});
+test('journal source cursor advances only after a saved page',async t=>{
+ const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'yu-journal-atomic-'));
+ const app=apply(createFakeHost().ctx,{port:0,dataDir,exposeViaDshWeb:false});await app.ready;app.scheduler.stop();
+ t.after(async()=>{await app.stop();fs.rmSync(dataDir,{recursive:true,force:true});});
+ const run={id:'run_page_one',queuedAt:Date.now(),meta:{rolloverDay:'2026-10-31',journalSourceCursor:{at:42,id:'run_source',offset:1600}}};
+ const old=app.repo.documents.upsert;
+ app.repo.documents.upsert=()=>{throw Error('fixture disk write failed');};
+ assert.throws(()=>persistJournal({repo:app.repo,run,text:'page one'}),/fixture disk write failed/);
+ assert.equal(app.repo.syncMeta('journal.cursor.2026-10-31'),null);
+ app.repo.documents.upsert=old;
+ persistJournal({repo:app.repo,run,text:'page one'});
+ assert.deepEqual(JSON.parse(app.repo.syncMeta('journal.cursor.2026-10-31')),run.meta.journalSourceCursor);
 });

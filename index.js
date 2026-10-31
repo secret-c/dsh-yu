@@ -160,7 +160,7 @@ export function apply(ctx, rawConfig = {}) {
     memoryStore,
     paths,
   });
-  const nativeMemoryHook = createNativeMemoryHook({ctx,dshLinks,memoryService,buildSections:async (context,link)=>{
+  const nativeMemoryHook = createNativeMemoryHook({ctx,dshLinks,memoryService,log,buildSections:async (context,link)=>{
     const profile=repo.contexts.get(link.contextId);
     if(!profile)throw new Error('关联会话的上下文方案不存在，请重新选择');
     const input=summarizeEvents(await dshLinks.contextEvents(link.id)).userText;

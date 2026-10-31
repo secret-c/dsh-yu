@@ -25,7 +25,11 @@ test('legacy prompt migrates once to default task goal without overwriting custo
 test('visible rule configuration survives upgrades and controls execution and task history',async t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'yu-visible-'));const db=openDatabase(path.join(dir,'db'));t.after(()=>{db.close();fs.rmSync(dir,{recursive:true,force:true});});const repo=createRepo(db),settings=createSettings(db);const deps={db,repo,settings};
  const config=ensureVisibleSync(deps);syncTriggerDefinitions(deps);let calls=0;const run=visibleSyncExecutor({...deps,serialize:fn=>fn(),execute:async()=>{calls++;return {status:'published'};}});
+ assert.equal(config.firstSessionTrigger.enabled,false);
+ assert.equal((await run({trigger:'new-session'})).status,'noop');assert.equal(calls,0);
+ updateSyncConfig(deps,{firstSessionEnabled:true});ensureVisibleSync(deps);assert.equal(readSyncConfig(deps).firstSessionTrigger.enabled,true);
  await run({trigger:'new-session'});assert.equal(calls,1);assert.equal(readSyncConfig(deps).history[0].taskId,config.task.id);assert.equal(readSyncConfig(deps).history[0].triggerId,config.firstSessionTrigger.id);
  updateSyncConfig(deps,{firstSessionEnabled:false,nightlyEnabled:false,at:'04:17'});syncTriggerDefinitions(deps);ensureVisibleSync(deps);assert.equal(readSyncConfig(deps).firstSessionTrigger.enabled,false);assert.equal(readSyncConfig(deps).scheduleTrigger.spec.at,'04:17');assert.equal((await run({trigger:'new-session'})).status,'noop');assert.equal(calls,1);
+ assert.equal((await run({trigger:'manual'})).status,'published');assert.equal((await run({trigger:'scheduled'})).status,'published');assert.equal(calls,3);
  updateSyncConfig(deps,{firstSessionEnabled:true});const broken=visibleSyncExecutor({...deps,serialize:fn=>fn(),execute:async()=>({status:'failed',error:'fixture failure'})});await broken({trigger:'new-session'});assert.equal(readSyncConfig(deps).history[0].status,'failed');assert.equal(readSyncConfig(deps).history[0].errorMessage,'fixture failure');
 });

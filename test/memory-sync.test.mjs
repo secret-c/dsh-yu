@@ -1,5 +1,5 @@
 import {ensureShortTermMapping} from '../lib/memory-sync.js';
-import {ensureVisibleSync} from '../lib/memory-sync-policy.js';
+import {ensureVisibleSync,updateSyncConfig} from '../lib/memory-sync-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,20 +9,35 @@ import {openDatabase} from '../lib/db.js';
 import {createRepo} from '../lib/repo.js';
 import {createSettings} from '../lib/settings.js';
 import {createMemoryService} from '../lib/memory.js';
-function setup(t, turn) {
+function setup(t, turn, archiveSession=null) {
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'yu-sync-'));const db=openDatabase(path.join(dir,'yu.db'));const repo=createRepo(db),settings=createSettings(db);
  t.after(()=>{db.close();fs.rmSync(dir,{recursive:true,force:true});});
  repo.memory.createBlock({slug:'short',name:'短期',content:'旧事实'});
  settings.set('prompt.core','核心原文');repo.memories.create({kind:'fact',text:'长期原文'});
- ensureVisibleSync({db,repo,settings});
+ ensureVisibleSync({db,repo,settings});updateSyncConfig({db,repo,settings},{firstSessionEnabled:true});
  const archived=[];let active=0,maxActive=0;const inputs=[];
  const host={disposeSession:async()=>{},runTurn:async opts=>{inputs.push(opts);active++;maxActive=Math.max(maxActive,active);try{return await turn(opts,repo);}finally{active--;}}};
- const ctx={get:key=>key==='workspaceRegistry'?{archiveSession:async id=>archived.push(id)}:null};
+ const ctx={get:key=>key==='workspaceRegistry'?{archiveSession:archiveSession??(async id=>archived.push(id))}:null};
  const service=createMemoryService({ctx,repo,settings,agentHost:host,models:{effectiveSelection:()=>({ready:true})},archiveService:{},paths:null});
  return {db,repo,settings,service,inputs,archived,maxActive:()=>maxActive};
 }
 const complete=(text='更新事实',extra={})=>({assistantText:text,modelFinishReason:'stop',turnEnd:{kind:'completed'},...extra});
 const phaseReply=opts=>complete(opts.input.includes('## 当前阶段\n长期引用')?'无新增事实':'更新事实');
+test('published memory survives an active-session archive error and later cleanup failure',async t=>{
+ let fail=true;const s=setup(t,phaseReply,async()=>{if(fail)throw Error('the session is active (subagent)');});source(s);
+ const first=await s.service.requireSync({trigger:'new-session'});
+ assert.equal(first.status,'published');assert.equal(first.warnings[0].stage,'archive');
+ const version=s.repo.memory.revision();assert.equal(s.repo.memory.pendingSyncConversations().length,1);
+ const second=await s.service.requireSync({trigger:'new-session'});
+ assert.equal(second.status,'noop');assert.equal(second.warnings[0].stage,'prior-cleanup');assert.equal(s.repo.memory.revision(),version);
+ source(s,'下一条新的用户材料');
+ const third=await s.service.requireSync({trigger:'new-session'});
+ assert.equal(third.status,'published');assert.equal(third.warnings[0].stage,'prior-cleanup');assert.notEqual(s.repo.memory.revision(),version);
+ const afterThird=s.repo.memory.revision();
+ assert.deepEqual(s.repo.memory.syncMessages(),[]);
+ const fourth=await s.service.requireSync({trigger:'manual',memoryPolicy:{longTermEnabled:false}});assert.equal(fourth.status,'noop',JSON.stringify(fourth));assert.equal(s.repo.memory.revision(),afterThird);
+ fail=false;await s.service.requireSync({trigger:'manual'});assert.equal(s.repo.memory.pendingSyncConversations().length,0);
+});
 test('disabled personal library is excluded from maintenance input while short-term sync remains usable',async t=>{
  const s=setup(t,async opts=>{assert.doesNotMatch(opts.input,/长期原文/);return complete('短期继续同步');});
  s.repo.memoryLibraries={personalEnabled:()=>false,canAutoWrite:()=>false};source(s);
@@ -38,7 +53,7 @@ test('policy changes during model work preserve memory and both cursors at commi
 });
 function source(s,text='我长期喜欢清淡的饮食'){const c=s.repo.conversations.create({title:'来源'});s.repo.messages.add({conversationId:c.id,role:'user',text});return c;}
 test('new-session saves plain body, one request, goal is sole system instruction and sources remain for long growth',async t=>{
- const s=setup(t,async opts=>{assert.equal(opts.holder.system[0].text,s.repo.tasks.list().find(t=>t.kind==='maintenance').goal);return complete('完整的短期正文（不要求任何闭括号）');});const c=source(s);
+ const s=setup(t,async opts=>{assert.equal(opts.holder.system[0].text,s.repo.tasks.list().find(t=>t.kind==='maintenance').goal);assert.doesNotMatch(opts.input,/当前核心记忆|核心原文/);return complete('完整的短期正文（不要求任何闭括号）');});const c=source(s);
  const result=await s.service.requireSync({trigger:'new-session'});assert.equal(result.status,'published');assert.equal(s.inputs.length,1);assert.equal(s.repo.memory.blockBySlug('short').content,'完整的短期正文（不要求任何闭括号）');assert.equal(s.repo.memory.syncMessages().length,0);assert.equal(s.repo.memory.longMessages().length,1);assert.equal(s.repo.messages.list(c.id)[0].text,'我长期喜欢清淡的饮食');assert.equal(s.archived.length,1);
 });
 test('failed old structure, empty, limit, timeout, unknown finish and model errors preserve both ledgers',async t=>{
@@ -47,7 +62,7 @@ test('failed old structure, empty, limit, timeout, unknown finish and model erro
  }
 });
 test('nightly second phase adds exact user quotes, deduplicates and no-source nightly avoids second request',async t=>{
- const s=setup(t,async opts=>complete(opts.input.includes('## 当前阶段\n长期引用')?'- [S1] 我长期喜欢清淡的饮食':'更新事实'));source(s);
+ const s=setup(t,async opts=>{assert.doesNotMatch(opts.input,/当前核心记忆|核心原文/);return complete(opts.input.includes('## 当前阶段\n长期引用')?'- [S1] 我长期喜欢清淡的饮食':'更新事实');});source(s);
  const result=await s.service.requireSync({trigger:'scheduled'});assert.equal(result.status,'published');assert.equal(result.phaseCalls,2);assert.equal(result.longTerm.added,1);const saved=s.repo.memories.list({search:'清淡'})[0];assert.equal(saved.meta.evidence.quote,saved.text);assert.ok(saved.meta.evidence.conversationId);
  source(s);assert.equal((await s.service.requireSync({trigger:'scheduled'})).longTerm.deduplicated,1);
  const empty=await s.service.requireSync({trigger:'scheduled'});assert.equal(empty.phaseCalls,1);assert.equal(empty.longTerm.sources,0);
@@ -88,9 +103,9 @@ test('existing three file injections and empty block database upgrade without lo
  fs.mkdirSync(path.join(dir,'injections'));fs.writeFileSync(path.join(dir,'injections/core.md'),'FILE CORE');fs.writeFileSync(path.join(dir,'injections/custom-short.md'),'USER SOLE SHORT');
  settings.set('prompt.sections',JSON.stringify([{id:'core',kind:'core',order:100,title:'核心',enabled:true,source:{path:'injections/core.md',format:'utf8'}},{id:'sec_user_short',kind:'custom',order:700,title:'短期记忆',heading:'最近的事',channel:'history',scope:'session',enabled:true,source:{path:'injections/custom-short.md',format:'utf8'}},{id:'retrieved',kind:'retrieved',order:710,title:'长期记忆',enabled:true}]));
  const paths={dataDir:dir,memoryFileForSlug:slug=>readSections(settings).sections.find(s=>s.legacyMemorySlug===slug)?.source?.path};repo.memory.configureProjection(targets=>projectMemoryTargets(repo,paths,targets),slugs=>memoryFileHashes(repo,paths,slugs));
- ensureShortTermMapping({repo,settings});initializeCompanionDefaults({db,repo,settings,paths});ensureVisibleSync({db,repo,settings});ensureShortTermMapping({repo,settings});
+ ensureShortTermMapping({repo,settings});initializeCompanionDefaults({db,repo,settings,paths});ensureVisibleSync({db,repo,settings});updateSyncConfig({db,repo,settings},{firstSessionEnabled:true});ensureShortTermMapping({repo,settings});
  assert.equal(repo.memory.blocks().length,1);assert.equal(repo.memory.blocks()[0].content,'USER SOLE SHORT');const short=readSections(settings).sections.find(s=>s.id==='sec_user_short');assert.equal(short.source.path,'injections/custom-short.md');assert.equal(short.heading,'最近的事');
- const service=createMemoryService({ctx:{get:()=>({archiveSession:async()=>{}})},repo,settings,paths,models:{effectiveSelection:()=>({ready:true})},agentHost:{disposeSession:async()=>{},runTurn:async opts=>{assert.match(opts.input,/USER SOLE SHORT/);assert.match(opts.input,/FILE CORE/);return {assistantText:'UPDATED SOLE SHORT',modelFinishReason:'stop',turnEnd:{kind:'completed'}};}},archiveService:{}});
+ const service=createMemoryService({ctx:{get:()=>({archiveSession:async()=>{}})},repo,settings,paths,models:{effectiveSelection:()=>({ready:true})},agentHost:{disposeSession:async()=>{},runTurn:async opts=>{assert.match(opts.input,/USER SOLE SHORT/);assert.doesNotMatch(opts.input,/FILE CORE|当前核心记忆/);return {assistantText:'UPDATED SOLE SHORT',modelFinishReason:'stop',turnEnd:{kind:'completed'}};}},archiveService:{}});
  const result=await service.requireSync({trigger:'new-session'});assert.equal(result.status,'published',JSON.stringify(result));assert.equal(repo.memory.blocks()[0].content,'UPDATED SOLE SHORT');assert.equal(readInjection(settings,short).text,'UPDATED SOLE SHORT');assert.equal(readSections(settings).sections.length,3);
 });
 

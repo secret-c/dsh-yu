@@ -16,21 +16,27 @@ function fixture() {
   const assemble=agent=>listener({sections:[{name:'host',text:'keep'}]}, {agent}, ()=>({sections:[{name:'host',text:'keep'}]}));
   return {links,hook,assemble,get calls(){return calls;},set failure(v){failure=v;},set allowed(v){allowed=v;}};
 }
-test('native assembly manages explicit local links only, freezes per agent/generation, retries failure',async()=>{
+test('native assembly manages explicit local links only, freezes per agent/generation, continues after memory failure',async()=>{
   const f=fixture(),agent={id:'native'};
   assert.equal((await f.assemble(agent)).sections.length,1);
   f.links.push({id:'link',sessionId:'native',hostId:'remote',enabled:true});
   await f.assemble(agent);assert.equal(f.calls,0);
   f.links[0].hostId='local';f.failure=true;
-  await assert.rejects(f.assemble(agent),/blocked/);assert.equal(f.calls,1);
+  const degraded=await f.assemble(agent);assert.equal(f.calls,1);assert.equal(degraded.sections[0].text,'keep');
   f.failure=false;
   const [a,b]=await Promise.all([f.assemble(agent),f.assemble(agent)]);
-  assert.equal(f.calls,2);assert.deepEqual(a,b);assert.equal(a.sections[0].text,'keep');
-  assert.deepEqual(await f.assemble(agent),a);assert.equal(f.calls,2);
-  f.links[0].memoryGeneration='new';assert.notDeepEqual(await f.assemble(agent),a);assert.equal(f.calls,3);
-  await f.assemble({id:'native'});assert.equal(f.calls,4);
+  assert.equal(f.calls,1);assert.deepEqual(a,b);assert.equal(a.sections[0].text,'keep');
+  assert.deepEqual(await f.assemble(agent),a);assert.equal(f.calls,1);
+  f.links[0].memoryGeneration='new';assert.notDeepEqual(await f.assemble(agent),a);assert.equal(f.calls,2);
+  await f.assemble({id:'native'});assert.equal(f.calls,3);
   f.allowed=false;await assert.rejects(f.assemble(agent),/denied/);
-  f.links[0].sessionId='yu-maint-123';await f.assemble({id:'yu-maint-123'});assert.equal(f.calls,4);
+  f.links[0].sessionId='yu-maint-123';await f.assemble({id:'yu-maint-123'});assert.equal(f.calls,3);
+});
+test('disabled first-session sync still injects existing native memory',async()=>{
+ let listener,calls=0;
+ createNativeMemoryHook({ctx:{get:()=>({context:()=>()=>{}}),on(name,fn){if(name==='system-prompt/assemble')listener=fn;return()=>{};}},dshLinks:{hostId:'local',getLinks:()=>[{id:'link',sessionId:'native',hostId:'local',enabled:true}],assertMemoryAccess(){}},memoryService:{firstSessionSyncEnabled:()=>false,async requireSync(){calls++;return {status:'published'};}},buildSections:()=>[{name:'yu:memory',text:'已有记忆'}]});
+ const result=await listener({}, {agent:{id:'native'}},()=>({contexts:[]}));
+ assert.equal(calls,0);assert.match(result.contexts[0].text,/已有记忆/);
 });
 test('Cordis next receives no arguments and an existing Yu snapshot is replaced once',async()=>{
   let listener;

@@ -23,6 +23,7 @@ test('fresh, draft, frame and historical snapshot preserve their distinct source
   const snapshotId = app.repo.contexts.snapshot({ conversationId: conversation.id, resolved: fresh.compiled });
   app.repo.conversations.update(conversation.id, { sessionId: 'session', meta: { contextFrame: { sessionId: 'session', snapshotId } } });
   app.settings.setMany({ 'prompt.core': 'CURRENT CORE' }, 'user');
+  assert.match(previewContext(app, context, { input: 'fixture' }).compiled.renderedSystem, /CURRENT CORE/);
   const frame = previewContext(app, context, { mode: 'frame', conversationId: conversation.id });
   assert.equal(frame.source.frozenFrom, snapshotId);
   assert.doesNotMatch(frame.compiled.renderedSystem, /CURRENT CORE/);
