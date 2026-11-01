@@ -1,4 +1,5 @@
 import {ensureShortTermMapping} from '../lib/memory-sync.js';
+import {readLongTermLines} from '../lib/maintenance-text.js';
 import {ensureVisibleSync,updateSyncConfig} from '../lib/memory-sync-policy.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -66,6 +67,38 @@ test('nightly second phase adds exact user quotes, deduplicates and no-source ni
  const result=await s.service.requireSync({trigger:'scheduled'});assert.equal(result.status,'published');assert.equal(result.phaseCalls,2);assert.equal(result.longTerm.added,1);const saved=s.repo.memories.list({search:'清淡'})[0];assert.equal(saved.meta.evidence.quote,saved.text);assert.ok(saved.meta.evidence.conversationId);
  source(s);assert.equal((await s.service.requireSync({trigger:'scheduled'})).longTerm.deduplicated,1);
  const empty=await s.service.requireSync({trigger:'scheduled'});assert.equal(empty.phaseCalls,1);assert.equal(empty.longTerm.sources,0);
+});
+test('one invalid citation is corrected in a fresh phase and publishes atomically',async t=>{
+ let citations=0;const s=setup(t,async opts=>{
+  if(!opts.input.includes('## 当前阶段\n长期引用'))return complete('新的短期正文');
+  citations++;
+  return complete(citations===1?'- [S1] 我长期喜欢浓郁的饮食':'- [S1] 我长期喜欢清淡的饮食');
+ });source(s);
+ const result=await s.service.requireSync({trigger:'scheduled'});
+ assert.equal(result.status,'published');assert.equal(result.citationRetries,1);assert.equal(result.phaseCalls,3);
+ assert.equal(s.repo.memory.blockBySlug('short').content,'新的短期正文');
+ assert.equal(s.repo.memories.list({search:'清淡'}).length,1);
+ assert.deepEqual(s.repo.memory.syncMessages(),[]);assert.deepEqual(s.repo.memory.longMessages(),[]);
+ assert.notEqual(s.inputs[1].sessionId,s.inputs[2].sessionId);
+ assert.equal(s.inputs[2].resume,false);assert.match(s.inputs[2].input,/引用纠正/);
+});
+test('two invalid citations stop after one retry without changing memory or cursors',async t=>{
+ const s=setup(t,async opts=>complete(opts.input.includes('## 当前阶段\n长期引用')?'- [S1] 我长期喜欢浓郁的饮食':'新的短期正文'));source(s);
+ const before=s.repo.memory.revision();const result=await s.service.requireSync({trigger:'scheduled'});
+ assert.equal(result.status,'failed');assert.equal(result.citationRetries,1);assert.equal(result.citationSourceId,'S1');assert.equal(s.inputs.length,3);
+ assert.equal(s.repo.memory.revision(),before);assert.equal(s.repo.memory.blockBySlug('short').content,'旧事实');
+ assert.deepEqual(s.repo.memory.syncCursor(),{});assert.deepEqual(s.repo.memory.longCursor(),{});
+});
+test('citation correction does not retry timeout and accepts only sources shown in its batch',async t=>{
+ const sources=[{text:'我长期喜欢清淡的饮食'},{text:'我长期喜欢安静的音乐'}];
+ assert.throws(()=>readLongTermLines('- [S2] 我长期喜欢安静的音乐',sources,2,new Set([1])),error=>error.code==='LONG_TERM_CITATION_INVALID'&&error.sourceId==='S2');
+ let citations=0;const s=setup(t,async opts=>{
+  if(!opts.input.includes('## 当前阶段\n长期引用'))return complete('新的短期正文');
+  return ++citations===1?complete('- [S1] 我长期喜欢浓郁的饮食'):complete('- [S1] 我长期喜欢清淡的饮食',{timedOut:true});
+ });source(s);const before=s.repo.memory.revision();
+ const result=await s.service.requireSync({trigger:'scheduled'});
+ assert.equal(result.status,'failed');assert.equal(result.citationRetries,1);assert.equal(s.inputs.length,3);
+ assert.equal(s.repo.memory.revision(),before);assert.deepEqual(s.repo.memory.syncCursor(),{});assert.deepEqual(s.repo.memory.longCursor(),{});
 });
 test('second phase invalid sources, paraphrase, empty and uncertainty roll back short phase too',async t=>{
  for(const reply of ['- [S9] 我长期喜欢清淡的饮食','- [S1] 我长期喜欢浓郁的饮食','随便写的长期事实','','- [S1] 也许我长期喜欢清淡的饮食']){

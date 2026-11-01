@@ -3,6 +3,26 @@ import assert from 'node:assert/strict';
 import { createAgentHost } from '../lib/agent-host.js';
 import { createFakeHost } from './fake-harness.mjs';
 
+test('agent status distinguishes a registered foreign agent without taking its handle', async () => {
+  const host=createFakeHost(),agents=host.ctx.get('agents');
+  const foreign=await agents.create({sessionId:'foreign'});
+  const adapter=createAgentHost({ctx:host.ctx,settings:{get:()=>null}});
+  assert.deepEqual(adapter.status('foreign'),{live:false,status:'offline',hostAgentRegistered:true,hostAgentStatus:'idle'});
+  await adapter.disposeAll();
+  assert.equal(agents.get('foreign'),foreign.agent);
+  await foreign.dispose();
+  assert.equal(adapter.status('foreign').hostAgentRegistered,false);
+});
+test('resume writer conflict records registry status and leaves foreign handle alone', async () => {
+  const host=createFakeHost(),agents=host.ctx.get('agents'),foreign=await agents.create({sessionId:'held'});
+  const warnings=[];agents.resume=async()=>{throw new Error('session is already owned by an active write handle');};
+  const adapter=createAgentHost({ctx:host.ctx,log:{warn:message=>warnings.push(message)},settings:{get:()=>null}});
+  await assert.rejects(adapter.ensureAgent({sessionId:'held',resume:true,route:{},holder:{parts:{},problems:[]}}),/active write handle/);
+  assert.equal(adapter.aliveCount(),0);assert.equal(agents.get('held'),foreign.agent);
+  assert.ok(warnings.some(message=>message.includes('stage=resume-open')&&message.includes('registry=live')&&message.includes('registryStatus=idle')));
+  await adapter.disposeAll();await foreign.dispose();
+});
+
 for (const failure of ['missing restrict', 'throws', 'empty catalog', 'missing schemas']) {
   test('restricted owner fails closed: ' + failure, async () => {
     const host = createFakeHost();

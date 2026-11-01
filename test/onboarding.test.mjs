@@ -435,6 +435,7 @@ test('an active writer keeps the old physical session bound after bounded retrie
  globalThis.setTimeout=(fn,ms,...args)=>realTimeout(fn,ms>=2000?0:ms,...args);
  t.after(()=>{app.agentHost.runTurn=original;globalThis.setTimeout=realTimeout;});
  const busy=await send('占用期间');assert.equal(busy.status,'failed');assert.equal(busy.errorCode,'SESSION_BUSY');
+ assert.ok(app.repo.runs.steps(busy.id).some(step=>step.title==='会话写入占用诊断'&&step.detail.includes('resume-open')));
  assert.equal(app.repo.conversations.get(first.conversationId).sessionId,first.sessionId);
  app.agentHost.runTurn=original;globalThis.setTimeout=realTimeout;
  const resumed=await send('占用释放后');assert.equal(resumed.status,'succeeded');assert.equal(resumed.sessionId,first.sessionId);
